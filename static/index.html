@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TwinCheck — AI Agent-Assisted Digital Twin Design Validation</title>
+  <title>Monsoon Twin — Digital Twin for Monsoon Preparedness</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%97%88%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -11,98 +12,95 @@
     <div class="brand">
       <span class="brand-mark">◈</span>
       <div>
-        <div class="brand-name">TwinCheck</div>
-        <div class="brand-sub">AI agent-assisted digital twin · data center &amp; AI factory design validation</div>
+        <div class="brand-name">Monsoon Twin</div>
+        <div class="brand-sub">AI agent-assisted digital twin for monsoon preparedness — Electrical &amp; Process</div>
       </div>
     </div>
-    <div class="userbox" id="userbox" hidden>
-      <span id="user-email" class="user-email"></span>
-      <button class="btn ghost" id="btn-logout">Sign out</button>
+    <div class="clock">
+      <span class="clock-label">Simulated time</span>
+      <span class="clock-value" id="sim-clock">Day 0, 00:00</span>
     </div>
   </header>
 
   <main id="main">
 
-    <!-- ============ LOGIN VIEW ============ -->
-    <section id="view-login" class="view">
-      <div class="login-card card">
-        <h1>Sign in</h1>
-        <p class="muted">Use your LTTS credentials to access the validation platform.</p>
-        <form id="login-form">
-          <label for="email">LTTS email</label>
-          <input id="email" type="email" placeholder="firstname.lastname@ltts.com" required>
-          <label for="ps">PS Number</label>
-          <input id="ps" type="text" inputmode="numeric" placeholder="e.g. 123456" required>
-          <div class="form-error" id="login-error" role="alert"></div>
-          <button class="btn primary" type="submit">Sign in</button>
-        </form>
-        <p class="hint">Demo build: any <code>@ltts.com</code> address with a 5–8 digit PS Number works.</p>
+    <!-- ============ SCENARIO CONTROLS ============ -->
+    <section class="card controls-card">
+      <div class="controls-row">
+        <div class="control-group">
+          <span class="control-label">Rainfall</span>
+          <div class="btn-group" id="rainfall-group">
+            <button class="btn seg" data-rainfall="calm">Calm</button>
+            <button class="btn seg" data-rainfall="moderate">Moderate</button>
+            <button class="btn seg" data-rainfall="heavy">Heavy</button>
+            <button class="btn seg" data-rainfall="extreme">Extreme</button>
+          </div>
+          <span class="muted small" id="rainfall-mm"></span>
+        </div>
+        <div class="control-group">
+          <span class="control-label">Playback</span>
+          <div class="btn-group" id="speed-group">
+            <button class="btn seg" data-speed="1">1x</button>
+            <button class="btn seg" data-speed="10">10x</button>
+            <button class="btn seg" data-speed="40">40x</button>
+            <button class="btn seg" data-speed="120">120x</button>
+          </div>
+          <button class="btn" id="btn-pause">⏸ Pause</button>
+        </div>
+        <div class="control-group">
+          <button class="btn ghost" id="btn-reset">↺ Reset scenario</button>
+        </div>
+      </div>
+      <div class="controls-row fault-row">
+        <span class="control-label">Inject a fault to demo instantly</span>
+        <div class="btn-group" id="fault-group"></div>
       </div>
     </section>
 
-    <!-- ============ UPLOAD VIEW ============ -->
-    <section id="view-upload" class="view" hidden>
-      <div class="view-head">
-        <h1>Upload discipline deliverables</h1>
-        <p class="muted">Each deliverable is analyzed by its discipline agent; the digital twin then
-          validates the design end-to-end across all three.</p>
+    <!-- ============ AI BRIEFING ============ -->
+    <section class="card briefing-card">
+      <div class="briefing-head">
+        <h2>Control-room briefing <span class="badge" id="briefing-source"></span></h2>
+        <span class="chip" id="overall-chip"></span>
       </div>
-      <div class="upload-grid" id="upload-grid"></div>
-      <div class="upload-actions">
-        <button class="btn primary" id="btn-dashboard" disabled>Open validation dashboard →</button>
-        <span class="muted" id="upload-status-line">Upload at least one deliverable to continue.
-          Cross-discipline checks need all three.</span>
+      <p class="briefing-text" id="briefing-text">Loading…</p>
+    </section>
+
+    <!-- ============ RISK DASHBOARD (the 5 fields) ============ -->
+    <section class="card">
+      <h2>Risk dashboard</h2>
+      <div class="table-wrap">
+        <table id="risk-table">
+          <thead>
+            <tr>
+              <th>Risk level</th>
+              <th>Affected area / equipment</th>
+              <th>Predicted problem</th>
+              <th>Est. time to problem</th>
+              <th>Recommended action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
 
-    <!-- ============ DASHBOARD VIEW ============ -->
-    <section id="view-dashboard" class="view" hidden>
-      <div class="view-head row">
-        <div>
-          <h1>Validation dashboard</h1>
-          <p class="muted">Live digital twin built from the uploaded deliverables.</p>
-        </div>
-        <div class="row-actions">
-          <button class="btn ghost" id="btn-back">← Uploads</button>
-          <button class="btn" id="btn-refresh">Re-run validation</button>
-        </div>
-      </div>
-
-      <div class="tiles" id="tiles"></div>
-
-      <div class="twin-grid">
-        <div class="card" id="power-card">
-          <h2>Power chain <span class="muted small">utility → transformer → UPS → IT load</span></h2>
-          <div id="power-meters" class="meters"></div>
-        </div>
-        <div class="card" id="cooling-card">
-          <h2>Cooling chain <span class="muted small">heat load vs installed capacity</span></h2>
-          <div id="cooling-meters" class="meters"></div>
-        </div>
-      </div>
-
-      <div class="card" id="summary-card" hidden>
-        <h2>Reviewer summary <span class="badge" id="summary-source"></span></h2>
-        <pre id="summary-text" class="summary-text"></pre>
-      </div>
-
-      <div class="card">
-        <h2>Findings <span class="muted small" id="findings-count"></span></h2>
-        <div class="table-wrap">
-          <table id="findings-table">
-            <thead>
-              <tr><th>Severity</th><th>Discipline</th><th>Finding</th><th>Detail</th><th>Location</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
+    <!-- ============ LIVE TWIN PANELS ============ -->
+    <div class="twin-grid">
+      <section class="card">
+        <h2>Electrical twin <span class="muted small">substations &amp; MCC rooms</span></h2>
+        <div class="asset-grid" id="electrical-grid"></div>
+      </section>
+      <section class="card">
+        <h2>Process twin <span class="muted small">sumps, drains &amp; tank-farm dyke</span></h2>
+        <div class="asset-grid" id="process-grid"></div>
+      </section>
+    </div>
 
   </main>
 
-  <footer class="foot muted">Hackathon prototype · 3 discipline AI agents + digital twin validator ·
-    documents never leave the demo server</footer>
+  <footer class="foot muted">Hackathon prototype · simulated plant data · digital twin persisted to local
+    SQLite storage · AI risk agents for Electrical &amp; Process disciplines</footer>
 
   <script src="/app.js"></script>
 </body>

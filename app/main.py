@@ -1,144 +1,113 @@
-"""TwinCheck — AI agent-assisted digital twin platform for end-to-end
-data center / AI factory design validation.
+"""Monsoon Twin — AI agent-assisted digital twin for monsoon preparedness in
+a chemical plant (Electrical + Process disciplines).
 
-Flow: LTTS login -> upload the three discipline deliverables -> discipline
-agents extract + validate -> twin builder merges and runs end-to-end checks
--> dashboard shows the live twin and all findings.
+Pipeline: simulated plant/weather data -> digital twin state -> risk agents
+predict monsoon risks -> dashboard shows risk level, affected equipment,
+predicted problem, ETA, and recommended action.
 """
 
 from pathlib import Path
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth
-from .agents import electrical, mechanical, process_agent, summarizer, twin
-from .parsers import ParseError
+from . import control, simulator, storage
+from .agents import narrator, risk
+from .twin_state import RAINFALL_PRESETS, twin
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
-SAMPLES_DIR = ROOT / "samples"
 
-DISCIPLINES = {
-    "electrical": {"agent": electrical, "label": "Electrical — Earthing Calculation & Power System"},
-    "mechanical": {"agent": mechanical, "label": "Mechanical — Cooling Equipment Data Sheets"},
-    "process": {"agent": process_agent, "label": "Process — Equipment List (IT & Mechanical)"},
-}
-
-app = FastAPI(title="TwinCheck", version="1.0")
-
-# token -> {discipline: {"filename", "extracted", "findings"}}
-_uploads: dict[str, dict] = {}
+app = FastAPI(title="Monsoon Twin", version="1.0")
 
 
-class LoginRequest(BaseModel):
-    email: str
-    ps_number: str
+@app.on_event("startup")
+def _startup():
+    simulator.start()
 
 
-def _require_session(token: str | None) -> dict:
-    session = auth.get_session(token)
-    if not session:
-        raise HTTPException(status_code=401, detail="Not logged in")
-    return session
+class RainfallRequest(BaseModel):
+    level: str
 
 
-@app.post("/api/login")
-def login(body: LoginRequest):
-    token = auth.login(body.email, body.ps_number)
-    if not token:
-        raise HTTPException(
-            status_code=401,
-            detail="Use your LTTS email (name@ltts.com) and numeric PS Number (5-8 digits).")
-    _uploads[token] = {}
-    return {"token": token, "email": body.email.strip().lower()}
+class FaultRequest(BaseModel):
+    asset_id: str
+    fault_type: str
 
 
-@app.post("/api/upload/{discipline}")
-async def upload(discipline: str, file: UploadFile = File(...),
-                 x_auth_token: str | None = Header(default=None)):
-    _require_session(x_auth_token)
-    if discipline not in DISCIPLINES:
-        raise HTTPException(status_code=404, detail=f"Unknown discipline '{discipline}'")
-    if not (file.filename or "").lower().endswith(".xlsx"):
-        raise HTTPException(status_code=400, detail="Please upload an .xlsx deliverable")
+class SpeedRequest(BaseModel):
+    speed: float
 
-    data = await file.read()
+
+class PauseRequest(BaseModel):
+    paused: bool
+
+
+@app.get("/api/state")
+def get_state():
+    snapshot = twin.snapshot()
+    snapshot["sim_control"] = simulator.control.snapshot()
+    return snapshot
+
+
+@app.get("/api/risks")
+def get_risks():
+    snapshot = twin.snapshot()
+    rows = risk.assess_all(snapshot)
+    return {
+        "sim_minutes": snapshot["sim_minutes"],
+        "rainfall_mm_hr": snapshot["rainfall_mm_hr"],
+        "rainfall_level": snapshot["rainfall_level"],
+        "overall_level": risk.overall_level(rows),
+        "rows": rows,
+        "briefing": narrator.briefing(snapshot["rainfall_level"], rows),
+    }
+
+
+@app.get("/api/history/{asset_id}")
+def get_history(asset_id: str, limit: int = 60):
+    if asset_id not in twin.electrical and asset_id not in twin.process:
+        raise HTTPException(status_code=404, detail=f"Unknown asset '{asset_id}'")
+    return {"asset_id": asset_id, "readings": storage.history(asset_id, limit)}
+
+
+@app.post("/api/control/rainfall")
+def post_rainfall(body: RainfallRequest):
     try:
-        result = DISCIPLINES[discipline]["agent"].analyze(file.filename, data)
-    except ParseError as exc:
+        control.set_rainfall(body.level)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-    _uploads.setdefault(x_auth_token, {})[discipline] = {
-        "filename": file.filename,
-        "extracted": result["extracted"],
-        "findings": result["findings"],
-    }
-    return {
-        "discipline": discipline,
-        "filename": file.filename,
-        "findings": result["findings"],
-        "errors": sum(1 for f in result["findings"] if f["severity"] == "error"),
-        "warnings": sum(1 for f in result["findings"] if f["severity"] == "warning"),
-    }
+    return {"ok": True, "rainfall_level": body.level, "presets": list(RAINFALL_PRESETS)}
 
 
-@app.get("/api/dashboard")
-def dashboard(x_auth_token: str | None = Header(default=None)):
-    _require_session(x_auth_token)
-    uploads = _uploads.get(x_auth_token, {})
-
-    result = twin.build(
-        uploads.get("electrical", {}).get("extracted"),
-        uploads.get("mechanical", {}).get("extracted"),
-        uploads.get("process", {}).get("extracted"),
-    )
-
-    all_findings = []
-    per_discipline = {}
-    for name, meta in DISCIPLINES.items():
-        entry = uploads.get(name)
-        per_discipline[name] = {
-            "label": meta["label"],
-            "uploaded": entry is not None,
-            "filename": entry["filename"] if entry else None,
-            "errors": sum(1 for f in (entry["findings"] if entry else []) if f["severity"] == "error"),
-            "warnings": sum(1 for f in (entry["findings"] if entry else []) if f["severity"] == "warning"),
-        }
-        if entry:
-            all_findings.extend(entry["findings"])
-    all_findings.extend(result["findings"])
-
-    severity_order = {"error": 0, "warning": 1, "info": 2}
-    all_findings.sort(key=lambda f: severity_order.get(f["severity"], 3))
-
-    summary = None
-    if uploads:
-        summary = summarizer.summarize(result["twin"], all_findings)
-
-    return {
-        "disciplines": per_discipline,
-        "twin": result["twin"],
-        "findings": all_findings,
-        "summary": summary,
-    }
+@app.post("/api/control/fault")
+def post_fault(body: FaultRequest):
+    try:
+        control.inject_fault(body.asset_id, body.fault_type)
+    except control.UnknownAsset:
+        raise HTTPException(status_code=404, detail=f"Unknown asset '{body.asset_id}'")
+    except control.UnknownFault:
+        raise HTTPException(status_code=400, detail=f"Unknown fault '{body.fault_type}'")
+    return {"ok": True}
 
 
-@app.get("/api/samples")
-def list_samples():
-    files = sorted(p.name for p in SAMPLES_DIR.glob("*.xlsx")) if SAMPLES_DIR.exists() else []
-    return {"files": files}
+@app.post("/api/control/speed")
+def post_speed(body: SpeedRequest):
+    control.set_speed(body.speed)
+    return {"ok": True, "speed": simulator.control.snapshot()["speed"]}
 
 
-@app.get("/api/samples/{name}")
-def get_sample(name: str):
-    path = (SAMPLES_DIR / name).resolve()
-    if path.parent != SAMPLES_DIR.resolve() or not path.exists() or path.suffix != ".xlsx":
-        raise HTTPException(status_code=404, detail="Sample not found")
-    return FileResponse(path, filename=name,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+@app.post("/api/control/pause")
+def post_pause(body: PauseRequest):
+    control.set_paused(body.paused)
+    return {"ok": True, "paused": body.paused}
+
+
+@app.post("/api/control/reset")
+def post_reset():
+    control.reset_all()
+    return {"ok": True}
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

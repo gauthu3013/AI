@@ -1,328 +1,44 @@
-/* TwinCheck frontend — login → upload → dashboard */
+/* Monsoon Twin frontend — scenario controls + live digital twin dashboard */
 
-const DISCIPLINES = [
-  {
-    id: "electrical",
-    title: "Electrical",
-    sub: "Earthing Calculation & Power System Summary",
-    sample: "electrical_earthing_and_power.xlsx",
-  },
-  {
-    id: "mechanical",
-    title: "Mechanical",
-    sub: "Cooling Equipment Data Sheets",
-    sample: "mechanical_cooling_datasheets.xlsx",
-  },
-  {
-    id: "process",
-    title: "Process",
-    sub: "Equipment List (IT racks & mechanical plant)",
-    sample: "process_it_equipment_list.xlsx",
-  },
+const POLL_MS = 2000;
+
+const ELECTRICAL_FAULTS = [
+  ["flood", "Flood / water ingress"],
+  ["earth_fault", "Earth-fault alarm"],
+  ["breaker_trip", "Trip breaker"],
+  ["ups_fail", "UPS/DG unavailable"],
+  ["ir_decline", "IR declining"],
+  ["clear", "Clear faults"],
+];
+const PROCESS_FAULTS = [
+  ["trip_duty_pump", "Trip duty pump"],
+  ["block_pump", "Block pump (low flow)"],
+  ["high_level", "Force high level"],
+  ["clear", "Clear faults"],
 ];
 
-const state = {
-  token: sessionStorage.getItem("twincheck_token"),
-  email: sessionStorage.getItem("twincheck_email"),
-  uploaded: new Set(),
-};
+const state = { assets: null, paused: false };
 
 const $ = (sel) => document.querySelector(sel);
 
-/* ---------- status helpers (icon + label, never color alone) ---------- */
 const STATUS = {
   good: { icon: "✔", label: "OK" },
   warning: { icon: "▲", label: "Attention" },
   critical: { icon: "✖", label: "Failed" },
-  neutral: { icon: "—", label: "No data" },
+  neutral: { icon: "—", label: "N/A" },
 };
+const RISK_TO_CHIP = { low: "good", medium: "warning", high: "critical" };
 
-function chip(kind, labelOverride) {
+function chipInner(kind, label) {
   const s = STATUS[kind] || STATUS.neutral;
-  const el = document.createElement("span");
+  return `<span class="dot" aria-hidden="true">${s.icon}</span>${label ?? s.label}`;
+}
+function chip(kind, label) {
+  return `<span class="chip ${kind}">${chipInner(kind, label)}</span>`;
+}
+function setChip(el, kind, label) {
   el.className = `chip ${kind}`;
-  el.innerHTML = `<span class="dot" aria-hidden="true">${s.icon}</span>${labelOverride || s.label}`;
-  return el;
-}
-
-/* ---------- api ---------- */
-async function api(path, options = {}) {
-  const headers = options.headers || {};
-  if (state.token) headers["X-Auth-Token"] = state.token;
-  const res = await fetch(path, { ...options, headers });
-  if (res.status === 401 && path !== "/api/login") {
-    logout();
-    throw new Error("Session expired — please sign in again.");
-  }
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.detail || `Request failed (${res.status})`);
-  return body;
-}
-
-/* ---------- views ---------- */
-function show(view) {
-  for (const id of ["view-login", "view-upload", "view-dashboard"]) {
-    $(`#${id}`).hidden = id !== view;
-  }
-  $("#userbox").hidden = view === "view-login";
-}
-
-function logout() {
-  sessionStorage.clear();
-  state.token = null;
-  state.email = null;
-  state.uploaded.clear();
-  show("view-login");
-}
-
-/* ---------- login ---------- */
-$("#login-form").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  $("#login-error").textContent = "";
-  try {
-    const body = await api("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: $("#email").value, ps_number: $("#ps").value }),
-    });
-    state.token = body.token;
-    state.email = body.email;
-    sessionStorage.setItem("twincheck_token", body.token);
-    sessionStorage.setItem("twincheck_email", body.email);
-    $("#user-email").textContent = body.email;
-    buildUploadCards();
-    show("view-upload");
-  } catch (err) {
-    $("#login-error").textContent = err.message;
-  }
-});
-
-$("#btn-logout").addEventListener("click", logout);
-
-/* ---------- upload ---------- */
-function buildUploadCards() {
-  const grid = $("#upload-grid");
-  grid.innerHTML = "";
-  for (const d of DISCIPLINES) {
-    const card = document.createElement("div");
-    card.className = "card upload-card";
-    card.innerHTML = `
-      <h3>${d.title} agent</h3>
-      <div class="discipline-sub">${d.sub}</div>
-      <label class="drop" id="drop-${d.id}">
-        <input type="file" accept=".xlsx" id="file-${d.id}">
-        <span id="drop-text-${d.id}">Click to choose the .xlsx deliverable<br>or drop it here</span>
-      </label>
-      <div class="actions">
-        <button class="btn primary" id="btn-${d.id}" disabled>Analyze</button>
-        <a class="sample-link" href="/api/samples/${d.sample}" download>Download sample deliverable</a>
-      </div>
-      <div class="upload-result" id="result-${d.id}"></div>`;
-    grid.appendChild(card);
-
-    const input = card.querySelector(`#file-${d.id}`);
-    const drop = card.querySelector(`#drop-${d.id}`);
-    const btn = card.querySelector(`#btn-${d.id}`);
-
-    input.addEventListener("change", () => {
-      if (input.files.length) {
-        card.querySelector(`#drop-text-${d.id}`).innerHTML =
-          `<span class="filename">${input.files[0].name}</span>`;
-        btn.disabled = false;
-      }
-    });
-    for (const evName of ["dragover", "dragleave", "drop"]) {
-      drop.addEventListener(evName, (ev) => {
-        ev.preventDefault();
-        drop.classList.toggle("drag", evName === "dragover");
-        if (evName === "drop" && ev.dataTransfer.files.length) {
-          input.files = ev.dataTransfer.files;
-          input.dispatchEvent(new Event("change"));
-        }
-      });
-    }
-    btn.addEventListener("click", () => uploadFile(d.id, input, btn));
-  }
-}
-
-async function uploadFile(discipline, input, btn) {
-  const result = $(`#result-${discipline}`);
-  result.textContent = "Analyzing…";
-  btn.disabled = true;
-  try {
-    const form = new FormData();
-    form.append("file", input.files[0]);
-    const body = await api(`/api/upload/${discipline}`, { method: "POST", body: form });
-    state.uploaded.add(discipline);
-    result.innerHTML = "";
-    const kind = body.errors ? "critical" : body.warnings ? "warning" : "good";
-    const label = body.errors
-      ? `${body.errors} error${body.errors > 1 ? "s" : ""}${body.warnings ? `, ${body.warnings} warning${body.warnings > 1 ? "s" : ""}` : ""}`
-      : body.warnings
-        ? `${body.warnings} warning${body.warnings > 1 ? "s" : ""}`
-        : "No issues found";
-    result.appendChild(chip(kind, label));
-    result.append(` Agent analyzed ${body.filename}.`);
-    $("#btn-dashboard").disabled = false;
-    $("#upload-status-line").textContent = state.uploaded.size === 3
-      ? "All three deliverables analyzed — the twin can validate end-to-end."
-      : `${state.uploaded.size}/3 deliverables analyzed. Cross-discipline checks need all three.`;
-  } catch (err) {
-    result.textContent = err.message;
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-$("#btn-dashboard").addEventListener("click", () => loadDashboard());
-$("#btn-back").addEventListener("click", () => show("view-upload"));
-$("#btn-refresh").addEventListener("click", () => loadDashboard());
-
-/* ---------- dashboard ---------- */
-async function loadDashboard() {
-  show("view-dashboard");
-  try {
-    const data = await api("/api/dashboard");
-    renderTiles(data);
-    renderPower(data.twin.power_chain);
-    renderCooling(data.twin.cooling_chain);
-    renderSummary(data.summary);
-    renderFindings(data.findings);
-  } catch (err) {
-    alert(err.message);
-  }
-}
-
-function renderTiles(data) {
-  const errors = data.findings.filter((f) => f.severity === "error").length;
-  const warnings = data.findings.filter((f) => f.severity === "warning").length;
-  const uploaded = Object.values(data.disciplines).filter((d) => d.uploaded).length;
-  const verdict = errors ? "critical" : warnings ? "warning" : uploaded ? "good" : "neutral";
-  const verdictText = errors ? "Failed" : warnings ? "Review" : uploaded ? "Passed" : "No data";
-
-  const tiles = [
-    { label: "Design verdict", value: verdictText, chipKind: verdict, chipLabel: errors ? `${errors} blocking issue${errors > 1 ? "s" : ""}` : warnings ? "warnings only" : "all checks green" },
-    { label: "Errors", value: errors, chipKind: errors ? "critical" : "good", chipLabel: errors ? "must fix" : "none" },
-    { label: "Warnings", value: warnings, chipKind: warnings ? "warning" : "good", chipLabel: warnings ? "review" : "none" },
-    { label: "Deliverables analyzed", value: `${uploaded}/3`, chipKind: uploaded === 3 ? "good" : "warning", chipLabel: uploaded === 3 ? "twin complete" : "twin partial" },
-  ];
-  const wrap = $("#tiles");
-  wrap.innerHTML = "";
-  for (const t of tiles) {
-    const el = document.createElement("div");
-    el.className = "tile";
-    el.innerHTML = `<div class="tile-label">${t.label}</div><div class="tile-value">${t.value}</div>`;
-    const note = document.createElement("div");
-    note.className = "tile-note";
-    note.appendChild(chip(t.chipKind, t.chipLabel));
-    el.appendChild(note);
-    wrap.appendChild(el);
-  }
-}
-
-function meter({ title, loadKw, capacityKw, note }) {
-  const el = document.createElement("div");
-  el.className = "meter";
-  if (!capacityKw) {
-    el.innerHTML = `<div class="meter-head"><span class="meter-title">${title}</span></div>
-      <div class="meter-empty">No capacity data in the uploaded deliverables.</div>`;
-    return el;
-  }
-  const ratio = loadKw / capacityKw;
-  const kind = ratio > 1 ? "critical" : ratio > 0.9 ? "warning" : "good";
-  const label = ratio > 1 ? "Over capacity" : ratio > 0.9 ? "Near limit" : "OK";
-  const pct = Math.min(ratio, 1) * 100;
-
-  el.innerHTML = `
-    <div class="meter-head">
-      <span class="meter-title">${title}</span>
-      <span class="meter-values">${fmt(loadKw)} / ${fmt(capacityKw)} kW · ${(ratio * 100).toFixed(0)}%</span>
-    </div>
-    <div class="track" title="${title}: load ${fmt(loadKw)} kW of ${fmt(capacityKw)} kW capacity">
-      <div class="fill ${kind}" style="width:${pct}%"></div>
-    </div>
-    <div class="meter-foot"><span class="meter-note">${note || ""}</span></div>`;
-  el.querySelector(".meter-foot").appendChild(chip(kind, label));
-  return el;
-}
-
-function fmt(n) {
-  return Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
-}
-
-function renderPower(chain) {
-  const wrap = $("#power-meters");
-  wrap.innerHTML = "";
-  if (!chain) {
-    wrap.innerHTML = `<div class="meter-empty">Upload the electrical deliverable to model the power chain.</div>`;
-    return;
-  }
-  wrap.appendChild(meter({
-    title: "Utility feed",
-    loadKw: chain.facility_load_kw, capacityKw: chain.utility_kw,
-    note: "Facility load (IT + 30% auxiliaries) vs utility capacity",
-  }));
-  wrap.appendChild(meter({
-    title: `Transformers (${(chain.transformers || []).map((t) => t.tag).join(", ") || "—"})`,
-    loadKw: chain.facility_load_kw, capacityKw: chain.transformer_kw,
-    note: "Facility load vs usable transformer capacity",
-  }));
-  wrap.appendChild(meter({
-    title: `UPS (${(chain.ups || []).map((u) => u.tag).join(", ") || "—"})`,
-    loadKw: chain.it_load_kw, capacityKw: chain.ups_kw,
-    note: "Critical IT load vs installed UPS capacity",
-  }));
-}
-
-function renderCooling(chain) {
-  const wrap = $("#cooling-meters");
-  wrap.innerHTML = "";
-  if (!chain) {
-    wrap.innerHTML = `<div class="meter-empty">Upload the mechanical deliverable to model the cooling chain.</div>`;
-    return;
-  }
-  const tags = (chain.chillers || []).map((c) => c.tag).join(", ") || "—";
-  wrap.appendChild(meter({
-    title: `Installed cooling (${tags})`,
-    loadKw: chain.heat_load_kw, capacityKw: chain.cooling_capacity_kw,
-    note: "IT heat load vs total chiller capacity",
-  }));
-  wrap.appendChild(meter({
-    title: "N+1 scenario (largest chiller lost)",
-    loadKw: chain.heat_load_kw, capacityKw: chain.n_plus_1_capacity_kw,
-    note: "Heat load vs remaining capacity after one failure",
-  }));
-}
-
-function renderSummary(summary) {
-  const card = $("#summary-card");
-  if (!summary) { card.hidden = true; return; }
-  card.hidden = false;
-  $("#summary-source").textContent = summary.source === "claude" ? "Claude AI" : "rule-based";
-  $("#summary-text").textContent = summary.text;
-}
-
-function renderFindings(findings) {
-  const tbody = $("#findings-table tbody");
-  tbody.innerHTML = "";
-  $("#findings-count").textContent = `${findings.length} total`;
-  if (!findings.length) {
-    tbody.innerHTML = `<tr class="empty-row"><td colspan="5">No findings — all checks passed.</td></tr>`;
-    return;
-  }
-  for (const f of findings) {
-    const tr = document.createElement("tr");
-    const sevKind = f.severity === "error" ? "critical" : f.severity === "warning" ? "warning" : "neutral";
-    const sevTd = document.createElement("td");
-    sevTd.appendChild(chip(sevKind, f.severity));
-    tr.appendChild(sevTd);
-    tr.insertAdjacentHTML("beforeend", `
-      <td>${f.discipline}</td>
-      <td class="finding-title">${escapeHtml(f.title)}</td>
-      <td class="finding-detail">${escapeHtml(f.detail)}</td>
-      <td class="loc">${escapeHtml(f.location)}</td>`);
-    tbody.appendChild(tr);
-  }
+  el.innerHTML = chipInner(kind, label);
 }
 
 function escapeHtml(s) {
@@ -331,11 +47,228 @@ function escapeHtml(s) {
   }[c]));
 }
 
-/* ---------- boot ---------- */
-if (state.token) {
-  $("#user-email").textContent = state.email || "";
-  buildUploadCards();
-  show("view-upload");
-} else {
-  show("view-login");
+async function api(path, options = {}) {
+  const res = await fetch(path, options);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `Request failed (${res.status})`);
+  return body;
 }
+async function postJson(path, body) {
+  return api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/* ---------- controls ---------- */
+function setActiveSeg(groupId, attr, value) {
+  document.querySelectorAll(`#${groupId} .seg`).forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset[attr] === String(value));
+  });
+}
+
+$("#rainfall-group").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-rainfall]");
+  if (!btn) return;
+  await postJson("/api/control/rainfall", { level: btn.dataset.rainfall });
+  setActiveSeg("rainfall-group", "rainfall", btn.dataset.rainfall);
+});
+
+$("#speed-group").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-speed]");
+  if (!btn) return;
+  const speed = Number(btn.dataset.speed);
+  await postJson("/api/control/speed", { speed });
+  setActiveSeg("speed-group", "speed", speed);
+});
+
+$("#btn-pause").addEventListener("click", async () => {
+  state.paused = !state.paused;
+  await postJson("/api/control/pause", { paused: state.paused });
+  $("#btn-pause").textContent = state.paused ? "▶ Resume" : "⏸ Pause";
+});
+
+$("#btn-reset").addEventListener("click", async () => {
+  await api("/api/control/reset", { method: "POST" });
+  state.paused = false;
+  $("#btn-pause").textContent = "⏸ Pause";
+  setActiveSeg("rainfall-group", "rainfall", "calm");
+  setActiveSeg("speed-group", "speed", 10);
+  await refresh();
+});
+
+function buildFaultControls(assets) {
+  const wrap = $("#fault-group");
+  const assetSelect = document.createElement("select");
+  assetSelect.className = "ctl";
+  assetSelect.id = "fault-asset";
+  const electricalGroup = document.createElement("optgroup");
+  electricalGroup.label = "Electrical";
+  const processGroup = document.createElement("optgroup");
+  processGroup.label = "Process";
+  for (const a of assets.electrical) {
+    electricalGroup.innerHTML += `<option value="${a.id}">${a.label}</option>`;
+  }
+  for (const a of assets.process) {
+    processGroup.innerHTML += `<option value="${a.id}">${a.label}</option>`;
+  }
+  assetSelect.append(electricalGroup, processGroup);
+
+  const faultSelect = document.createElement("select");
+  faultSelect.className = "ctl";
+  faultSelect.id = "fault-type";
+
+  const injectBtn = document.createElement("button");
+  injectBtn.className = "btn primary";
+  injectBtn.textContent = "Inject";
+
+  const clearBtn = document.createElement("button");
+  clearBtn.className = "btn ghost";
+  clearBtn.textContent = "Clear all faults";
+
+  function populateFaultTypes() {
+    const isElectrical = assets.electrical.some((a) => a.id === assetSelect.value);
+    const options = isElectrical ? ELECTRICAL_FAULTS : PROCESS_FAULTS;
+    faultSelect.innerHTML = options.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  }
+  assetSelect.addEventListener("change", populateFaultTypes);
+  populateFaultTypes();
+
+  injectBtn.addEventListener("click", async () => {
+    await postJson("/api/control/fault", { asset_id: assetSelect.value, fault_type: faultSelect.value });
+    await refresh();
+  });
+  clearBtn.addEventListener("click", async () => {
+    const all = [...assets.electrical, ...assets.process];
+    await Promise.all(all.map((a) => postJson("/api/control/fault", { asset_id: a.id, fault_type: "clear" })));
+    await refresh();
+  });
+
+  wrap.append(assetSelect, faultSelect, injectBtn, clearBtn);
+}
+
+/* ---------- rendering ---------- */
+function fmtClock(simMinutes) {
+  const total = Math.round(simMinutes);
+  const day = Math.floor(total / 1440);
+  const hh = String(Math.floor((total % 1440) / 60)).padStart(2, "0");
+  const mm = String(total % 60).padStart(2, "0");
+  return `Day ${day}, ${hh}:${mm}`;
+}
+
+function param(label, valueHtml, flagged) {
+  return `<div><div class="muted">${label}</div><div class="param-val${flagged ? " flagged" : ""}">${valueHtml}</div></div>`;
+}
+
+function electricalCard(asset, riskLevel) {
+  const chipKind = RISK_TO_CHIP[riskLevel] || "neutral";
+  return `
+    <div class="asset-card">
+      <div class="asset-head">
+        <span class="asset-title">${escapeHtml(asset.label)}</span>
+        ${chip(chipKind, (riskLevel || "n/a").toUpperCase())}
+      </div>
+      <div class="asset-params">
+        ${param("Water level", `${asset.water_level_m.toFixed(2)} m`, asset.water_level_m > 0.5)}
+        ${param("Humidity", `${asset.humidity_pct.toFixed(0)}%`, asset.humidity_pct > 85)}
+        ${param("Water ingress", asset.water_ingress ? "ALERT" : "Normal", asset.water_ingress)}
+        ${param("Motor current", `${asset.motor_current_pct.toFixed(0)}%`, asset.motor_current_pct > 115)}
+        ${param("Breaker", asset.breaker_status, asset.breaker_status === "tripped")}
+        ${param("Leakage current", `${asset.leakage_current_ma.toFixed(0)} mA`, asset.earth_fault_alarm)}
+        ${param("UPS/DG", asset.ups_dg_available ? "Available" : "Unavailable", !asset.ups_dg_available)}
+        ${param("IR value", `${asset.ir_mohm.toFixed(0)} MΩ${asset.ir_trend_declining ? " ↓" : ""}`, asset.ir_mohm < 100)}
+      </div>
+    </div>`;
+}
+
+function processCard(asset, riskLevel) {
+  const chipKind = RISK_TO_CHIP[riskLevel] || "neutral";
+  const pct = Math.max(0, Math.min(100, asset.level_pct));
+  const barKind = pct > 85 ? "critical" : pct > 60 ? "warning" : "";
+  const rate = asset.rate_of_rise_pct_min;
+  return `
+    <div class="asset-card">
+      <div class="asset-head">
+        <span class="asset-title">${escapeHtml(asset.label)}</span>
+        ${chip(chipKind, (riskLevel || "n/a").toUpperCase())}
+      </div>
+      <div class="asset-params">
+        <div>
+          <div class="muted">Level</div>
+          <div class="param-val${pct > 85 ? " flagged" : ""}">${asset.level_pct.toFixed(0)}%</div>
+          <div class="bar"><div class="bar-fill ${barKind}" style="width:${pct}%"></div></div>
+        </div>
+        ${param("Rate of rise", `${rate >= 0 ? "+" : ""}${rate.toFixed(2)}%/min`, rate > 1.0)}
+        ${param("Duty pump", asset.duty_pump_status, asset.duty_pump_status === "trip")}
+        ${param("Standby pump", asset.standby_pump_status, false)}
+        ${param("Discharge pressure", `${asset.pump_discharge_bar.toFixed(1)} bar`, asset.duty_pump_status !== "off" && asset.pump_discharge_bar < 2.0)}
+        ${param("Flow", `${asset.pump_flow_m3h.toFixed(0)} m³/h`, asset.duty_pump_status !== "off" && asset.pump_flow_m3h < 40)}
+        ${param("Critical equipment", asset.critical_equipment_available ? "Available" : "Unavailable", !asset.critical_equipment_available)}
+      </div>
+    </div>`;
+}
+
+function renderTwinPanels(snapshot, riskByAsset) {
+  $("#electrical-grid").innerHTML = Object.values(snapshot.electrical)
+    .map((a) => electricalCard(a, riskByAsset[a.id]?.risk_level)).join("");
+  $("#process-grid").innerHTML = Object.values(snapshot.process)
+    .map((a) => processCard(a, riskByAsset[a.id]?.risk_level)).join("");
+}
+
+function renderRiskTable(rows) {
+  const tbody = document.querySelector("#risk-table tbody");
+  if (!rows.length) {
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="5">No data yet.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr>
+      <td>${chip(RISK_TO_CHIP[r.risk_level], r.risk_level.toUpperCase())}</td>
+      <td class="risk-label">${escapeHtml(r.label)}</td>
+      <td class="risk-problem">${escapeHtml(r.predicted_problem)}</td>
+      <td class="risk-eta">${escapeHtml(r.eta_label)}</td>
+      <td class="risk-action">${escapeHtml(r.recommended_action)}</td>
+    </tr>`).join("");
+}
+
+function renderBriefing(risksBody) {
+  $("#briefing-source").textContent = risksBody.briefing.source === "claude" ? "Claude AI" : "rule-based";
+  $("#briefing-text").textContent = risksBody.briefing.text;
+  setChip($("#overall-chip"), RISK_TO_CHIP[risksBody.overall_level],
+    `Plant risk: ${risksBody.overall_level.toUpperCase()}`);
+}
+
+/* ---------- refresh loop ---------- */
+async function refresh() {
+  const [stateBody, risksBody] = await Promise.all([api("/api/state"), api("/api/risks")]);
+
+  $("#sim-clock").textContent = fmtClock(stateBody.sim_minutes);
+  $("#rainfall-mm").textContent = `${stateBody.rainfall_mm_hr} mm/hr`;
+  setActiveSeg("rainfall-group", "rainfall", stateBody.rainfall_level);
+  setActiveSeg("speed-group", "speed", stateBody.sim_control.speed);
+  state.paused = stateBody.sim_control.paused;
+  $("#btn-pause").textContent = state.paused ? "▶ Resume" : "⏸ Pause";
+
+  const riskByAsset = Object.fromEntries(risksBody.rows.map((r) => [r.asset_id, r]));
+  renderTwinPanels(stateBody, riskByAsset);
+  renderRiskTable(risksBody.rows);
+  renderBriefing(risksBody);
+}
+
+async function boot() {
+  const stateBody = await api("/api/state");
+  state.assets = {
+    electrical: Object.values(stateBody.electrical).map((a) => ({ id: a.id, label: a.label })),
+    process: Object.values(stateBody.process).map((a) => ({ id: a.id, label: a.label })),
+  };
+  buildFaultControls(state.assets);
+  setActiveSeg("speed-group", "speed", 10);
+  await refresh();
+  setInterval(() => refresh().catch((err) => console.error(err)), POLL_MS);
+}
+
+boot().catch((err) => {
+  console.error(err);
+  $("#briefing-text").textContent = `Failed to load: ${err.message}`;
+});
