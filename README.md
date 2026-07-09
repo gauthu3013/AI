@@ -1,93 +1,108 @@
-# TwinCheck
+# Monsoon Twin
 
-**AI agent-assisted digital twin platform for end-to-end data center & AI factory design validation.**
+**AI agent-assisted digital twin for monsoon preparedness in a chemical plant — Electrical & Process disciplines.**
 
-Engineers sign in with their LTTS credentials, upload the three discipline deliverables, and three
-AI agents extract structured data from each document and check it for errors. The extracted data is
-merged into a **digital twin** of the facility — the power chain and the cooling chain — and a
-validation layer checks the design **end-to-end across disciplines**. Results appear on a live
-dashboard: capacity meters, a reviewer summary, and a findings table with exact document locations.
+> We collect real-time Electrical and Process parameters, update the Digital Twin, and use AI to
+> predict monsoon-related risks and recommend preventive actions before flooding or equipment
+> failure occurs.
+
+Moves the plant from a manual monsoon checklist to a predictive system: a live digital twin models
+every critical Electrical and Process asset, two AI risk agents continuously analyze it, and a
+single dashboard shows exactly five things per risk — **risk level, affected area/equipment,
+predicted problem, estimated time to problem, and recommended action.**
 
 ## How it works
 
 ```
-LTTS login (email + PS Number)
+Simulated plant + weather data                 ("user inputs → plant operational data")
         │
         ▼
-┌───────────────────────────────────────────────────────┐
-│  Upload deliverables                                  │
-│   • Electrical  — Earthing Calculation + Power System │──▶ Electrical agent
-│   • Mechanical  — Cooling Equipment Data Sheets       │──▶ Mechanical agent
-│   • Process     — Equipment List (IT + mechanical)    │──▶ Process agent
-└───────────────────────────────────────────────────────┘
-        │  each agent: extract structured data + per-document checks
-        ▼
-   Digital twin builder  ──  merges the three extracts into one facility model
+Digital twin state (app/twin_state.py)          live Electrical + Process asset parameters
         │
         ▼
-   End-to-end validator  ──  IT load ≤ UPS ≤ transformer ≤ utility feed
-                             heat load ≤ cooling capacity (with N+1)
-                             tag reconciliation across disciplines
+Monsoon simulator (app/simulator.py)            advances the state every tick — rainfall drives
+        │                                       water levels, sump/drain levels, humidity, etc.
+        ▼
+Local cloud storage (app/storage.py)            every tick persisted to SQLite (data/twin_history.db)
         │
         ▼
-   Dashboard  ──  capacity meters · verdict tiles · AI reviewer summary · findings table
+Risk agents (app/agents/)                       Electrical agent + Process agent read the twin,
+        │                                       compare against configured limits, predict risk
+        ▼
+Dashboard (static/)                              risk level · affected equipment · predicted problem
+                                                  · ETA · recommended action — refreshed live
 ```
 
 ### The agents
 
-| Agent | Deliverable | Checks |
+| Agent | Parameters checked | Predicts |
 |---|---|---|
-| **Electrical** | Earthing calculation + power system summary | Recomputes conductor sizing (IEEE 80 / IS 3043 simplified), grid resistance vs limit, step/touch potentials vs tolerable limits, missing inputs |
-| **Mechanical** | Cooling equipment data sheets | Mandatory fields, tag format, design ≥ operating temperature/pressure |
-| **Process** | Equipment list | Duplicate tags, missing loads, quantity × unit = total consistency |
-| **Twin validator** | (all three) | IT load vs UPS vs transformer vs utility; cooling capacity & N+1 redundancy; every listed mechanical item has a data sheet |
+| **Electrical** (`app/agents/electrical_risk.py`) | Water level near substation/MCC, panel-room humidity, water-ingress status, leakage current / earth-fault alarm, breaker status, UPS/DG availability, insulation-resistance trend, outdoor motor current | Flooding risk, moisture/condensation risk, water-ingress alert, electrical safety risk, insulation deterioration, emergency-power readiness |
+| **Process** (`app/agents/process_risk.py`) | Rainfall, sump/drain/dyke level and rate of rise, dewatering-pump status, discharge pressure, flow, critical-equipment availability | Overflow prediction with an estimated time-to-problem, drain blockage risk, pump availability/performance risk |
 
-### Optional Claude summary
+Each agent returns exactly the dashboard's five fields per asset. A third agent
+(`app/agents/narrator.py`) optionally asks Claude (`claude-opus-4-8`) to write a 2–4 sentence
+control-room shift-handover briefing from the risk table; without an API key it falls back to a
+rule-based briefing, so the whole system works offline.
 
-If `ANTHROPIC_API_KEY` is set, a fourth agent asks Claude (`claude-opus-4-8`) to write the
-executive reviewer summary from the twin state and findings. Without a key the platform falls back
-to a rule-based summary, so the full demo works offline.
+### Example output (matches the brief)
+
+Triggering **Heavy rain** + injecting **"Flood / water ingress" on MCC-02** and **"Trip duty pump"
+on Sump-01** reproduces the brief's two worked examples almost verbatim:
+
+- **MCC-02 — HIGH RISK:** Water ingress risk near the MCC/substation; panel-room humidity above
+  the configured limit. *Inspect water ingress and cable-entry sealing, check panel space-heater
+  operation, test insulation resistance.*
+- **Sump-01 — HIGH RISK:** Duty dewatering pump tripped; critical dewatering equipment
+  unavailable, overflow predicted in **~34 min**. *Start the standby pump and check pump
+  performance, restore duty pump availability immediately.*
 
 ## Run it
 
 ```bash
 pip install -r requirements.txt
-python samples/generate_samples.py     # regenerate demo deliverables (already committed)
 uvicorn app.main:app --port 8000
 ```
 
-Open http://localhost:8000 and sign in with any `@ltts.com` email and a 5–8 digit PS Number
-(the login is a demo mock — no real SSO).
+Open http://localhost:8000. No login — the dashboard loads straight into the live twin.
 
-## Demo script (2 minutes)
+### Demo script (2 minutes)
 
-1. Sign in (e.g. `firstname.lastname@ltts.com` / `123456`).
-2. On each upload card, click **Download sample deliverable**, then upload it and click **Analyze**.
-3. Open the **validation dashboard**. The samples contain deliberately seeded errors, so the twin
-   lights up:
-   - **UPS meter red** — 2,400 kW IT load vs 2,000 kW UPS capacity (found by cross-referencing the
-     process equipment list against the electrical power summary).
-   - **N+1 cooling red** — losing one 1,200 kW chiller leaves less capacity than the heat load.
-   - **CH-03 flagged** — in the equipment list but has no mechanical data sheet.
-   - Document-level errors: undersized earthing conductor (recomputed vs stated), touch potential
-     over limit, design pressure below operating pressure, missing capacity field, duplicate tag,
-     missing unit load.
-4. Every finding carries its file / sheet / row, so it is directly actionable.
+1. Watch the baseline: calm rainfall, every asset LOW, control-room briefing says "no risks
+   detected."
+2. Click **Heavy** rainfall. Over the next ~1–2 minutes (10x playback), watch Storm Drain-01 and
+   the tank-farm MCC drift toward MEDIUM on their own — the twin is predicting, not just alarming.
+3. For the guaranteed payoff moment, use **"Inject a fault to demo instantly"**: pick `MCC-02` →
+   `Flood / water ingress`, click Inject; then `Sump-01` → `Trip duty pump`, click Inject. Both
+   flip to HIGH within a couple of seconds, with the ETA and recommended action shown live.
+4. Point out the five dashboard columns, the control-room briefing banner, and that every reading
+   underneath is being written to local SQLite storage in real time (`data/twin_history.db`).
+5. Click **Reset scenario** to return to the calm baseline for a re-run.
+
+### Controls
+
+- **Rainfall** — Calm / Moderate / Heavy / Extreme presets drive the whole simulation.
+- **Playback** — 1x / 10x / 40x / 120x simulated-time speed, plus Pause.
+- **Inject a fault** — pick any Electrical or Process asset and force a specific failure
+  (flood, earth fault, breaker trip, UPS/DG loss, IR decline / pump trip, blockage, high level)
+  for an instant, repeatable demo of any risk scenario. "Clear all faults" returns every asset to
+  healthy readings without resetting the rainfall or the clock.
+- **Reset scenario** — returns the whole twin, rainfall, and playback speed to the calm baseline.
 
 ## Project layout
 
 ```
-app/main.py              FastAPI app: login, uploads, dashboard API, static hosting
-app/auth.py              Mock LTTS login (email domain + PS Number format)
-app/parsers.py           .xlsx parsing helpers (key/value sheets + table sheets)
-app/agents/electrical.py    Electrical discipline agent
-app/agents/mechanical.py    Mechanical discipline agent
-app/agents/process_agent.py Process discipline agent
-app/agents/twin.py          Digital twin builder + end-to-end validator
-app/agents/summarizer.py    Claude summary agent (rule-based fallback)
-static/                  Frontend (vanilla HTML/CSS/JS, dark theme)
-samples/                 Demo deliverables with seeded errors + generator script
+app/main.py                 FastAPI app: state/risk/history/control endpoints, static hosting
+app/twin_state.py            Digital twin state: every Electrical & Process asset + limits
+app/simulator.py              Background monsoon-scenario physics (rainfall -> levels/humidity/etc.)
+app/control.py                 Manual override API: rainfall presets, fault injection, speed, reset
+app/storage.py                  SQLite persistence — the "local cloud storage" leg of the pipeline
+app/agents/electrical_risk.py    Electrical discipline risk agent
+app/agents/process_risk.py        Process discipline risk agent
+app/agents/risk.py                 Aggregates + sorts the risk table
+app/agents/narrator.py              Claude control-room briefing (rule-based fallback)
+static/                       Frontend (vanilla HTML/CSS/JS, dark theme, live-polling dashboard)
 ```
 
-*Hackathon prototype — the login is mocked, documents are held in memory per session, and design
-assumptions (30% auxiliary load, heat load = IT load) are simplified for the demo.*
+*Hackathon prototype — plant/weather data is simulated (no real sensors are wired up), and the
+physics constants are simplified for a demo timescale rather than calibrated to a real site.*
