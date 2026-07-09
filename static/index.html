@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TwinCheck — AI Agent-Assisted Digital Twin Design Validation</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◈</span>
+      <div>
+        <div class="brand-name">TwinCheck</div>
+        <div class="brand-sub">AI agent-assisted digital twin · data center &amp; AI factory design validation</div>
+      </div>
+    </div>
+    <div class="userbox" id="userbox" hidden>
+      <span id="user-email" class="user-email"></span>
+      <button class="btn ghost" id="btn-logout">Sign out</button>
+    </div>
+  </header>
+
+  <main id="main">
+
+    <!-- ============ LOGIN VIEW ============ -->
+    <section id="view-login" class="view">
+      <div class="login-card card">
+        <h1>Sign in</h1>
+        <p class="muted">Use your LTTS credentials to access the validation platform.</p>
+        <form id="login-form">
+          <label for="email">LTTS email</label>
+          <input id="email" type="email" placeholder="firstname.lastname@ltts.com" required>
+          <label for="ps">PS Number</label>
+          <input id="ps" type="text" inputmode="numeric" placeholder="e.g. 123456" required>
+          <div class="form-error" id="login-error" role="alert"></div>
+          <button class="btn primary" type="submit">Sign in</button>
+        </form>
+        <p class="hint">Demo build: any <code>@ltts.com</code> address with a 5–8 digit PS Number works.</p>
+      </div>
+    </section>
+
+    <!-- ============ UPLOAD VIEW ============ -->
+    <section id="view-upload" class="view" hidden>
+      <div class="view-head">
+        <h1>Upload discipline deliverables</h1>
+        <p class="muted">Each deliverable is analyzed by its discipline agent; the digital twin then
+          validates the design end-to-end across all three.</p>
+      </div>
+      <div class="upload-grid" id="upload-grid"></div>
+      <div class="upload-actions">
+        <button class="btn primary" id="btn-dashboard" disabled>Open validation dashboard →</button>
+        <span class="muted" id="upload-status-line">Upload at least one deliverable to continue.
+          Cross-discipline checks need all three.</span>
+      </div>
+    </section>
+
+    <!-- ============ DASHBOARD VIEW ============ -->
+    <section id="view-dashboard" class="view" hidden>
+      <div class="view-head row">
+        <div>
+          <h1>Validation dashboard</h1>
+          <p class="muted">Live digital twin built from the uploaded deliverables.</p>
+        </div>
+        <div class="row-actions">
+          <button class="btn ghost" id="btn-back">← Uploads</button>
+          <button class="btn" id="btn-refresh">Re-run validation</button>
+        </div>
+      </div>
+
+      <div class="tiles" id="tiles"></div>
+
+      <div class="twin-grid">
+        <div class="card" id="power-card">
+          <h2>Power chain <span class="muted small">utility → transformer → UPS → IT load</span></h2>
+          <div id="power-meters" class="meters"></div>
+        </div>
+        <div class="card" id="cooling-card">
+          <h2>Cooling chain <span class="muted small">heat load vs installed capacity</span></h2>
+          <div id="cooling-meters" class="meters"></div>
+        </div>
+      </div>
+
+      <div class="card" id="summary-card" hidden>
+        <h2>Reviewer summary <span class="badge" id="summary-source"></span></h2>
+        <pre id="summary-text" class="summary-text"></pre>
+      </div>
+
+      <div class="card">
+        <h2>Findings <span class="muted small" id="findings-count"></span></h2>
+        <div class="table-wrap">
+          <table id="findings-table">
+            <thead>
+              <tr><th>Severity</th><th>Discipline</th><th>Finding</th><th>Detail</th><th>Location</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="foot muted">Hackathon prototype · 3 discipline AI agents + digital twin validator ·
+    documents never leave the demo server</footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
