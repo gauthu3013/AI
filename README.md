@@ -59,12 +59,40 @@ on Sump-01** reproduces the brief's two worked examples almost verbatim:
 
 ## Run it
 
+**Easiest — one click:**
+- **Windows:** double-click **`run.bat`**
+- **macOS / Linux:** run **`./run.sh`** (or `bash run.sh`)
+
+It installs the dependencies on first run, starts the server, and opens
+http://localhost:8000 in your browser. Keep the window open while you use the
+app; press `Ctrl+C` (or close the window) to stop it.
+
+**Or manually:**
+
 ```bash
 pip install -r requirements.txt
 uvicorn app.main:app --port 8000
 ```
 
-Open http://localhost:8000. No login — the dashboard loads straight into the live twin.
+Then open http://localhost:8000. No login — the dashboard loads straight into
+the live twin.
+
+> **First time on Windows?** Install Python 3.10+ from
+> [python.org](https://www.python.org/downloads/) and **tick "Add python.exe to
+> PATH"** during setup, then double-click `run.bat`.
+
+### Open it on other devices (same Wi-Fi)
+
+To let phones or other laptops on the same network open the dashboard, start the
+server bound to all interfaces and browse to the host machine's IP:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Find the host's local IP (`ipconfig` on Windows, `hostname -I` on Linux,
+`ipconfig getifaddr en0` on macOS) and open `http://<that-ip>:8000` on the other
+device. All devices share the same live twin.
 
 ### Demo script (2 minutes)
 
